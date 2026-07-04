@@ -95,17 +95,32 @@ async function fetchHtml(url: string): Promise<string | null> {
     const res = await fetch(url, {
       signal: controller.signal,
       headers: {
+        // A more browser-like UA + headers reduces (but does not eliminate)
+        // the chance of basic bot-detection blocking us. Enterprise sites
+        // behind Cloudflare/Akamai (e.g. tesla.com) will often still block
+        // requests from data-center IPs like Vercel's regardless.
         "User-Agent":
-          "Mozilla/5.0 (compatible; CompanyResearchBot/1.0; +https://example.com/bot)",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
       },
       cache: "no-store",
     });
     clearTimeout(timeout);
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.warn(`[crawler] ${url} responded ${res.status} ${res.statusText}`);
+      return null;
+    }
     const contentType = res.headers.get("content-type") ?? "";
-    if (!contentType.includes("text/html")) return null;
+    if (!contentType.includes("text/html")) {
+      console.warn(`[crawler] ${url} returned non-HTML content-type: ${contentType}`);
+      return null;
+    }
     return await res.text();
-  } catch {
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(`[crawler] ${url} fetch failed: ${reason}`);
     return null;
   }
 }
@@ -157,7 +172,14 @@ export async function crawlWebsite(startUrl: string): Promise<CrawledPage[]> {
   const homeUrl = normalizeUrl(startUrl);
   const homeHtml = await fetchHtml(homeUrl);
   if (!homeHtml) {
-    throw new Error(`Could not fetch website: ${homeUrl}`);
+    // Some sites (Tesla, Nike, Apple, etc.) block automated requests from
+    // data-center IPs regardless of headers used. Rather than failing the
+    // whole research pipeline, return no crawled pages — the AI analysis
+    // step still has Serper search snippets to work from.
+    console.warn(
+      `[crawler] Could not fetch homepage for ${homeUrl} — continuing with search-only data.`
+    );
+    return [];
   }
 
   const $home = cheerio.load(homeHtml);
